@@ -1,0 +1,2 @@
+# SpiralDB
+Spiral-addressed database
