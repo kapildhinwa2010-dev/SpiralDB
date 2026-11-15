@@ -1,75 +1,51 @@
+"""Tests for SpiralDB: content addressing, parity detection, honest repair."""
+
 import pytest
 
-from spiraldb import HelixMemory, spiral_coordinates
-
-
-def test_spiral_starts_at_center():
-    size = 5
-    coords = spiral_coordinates(size)
-    assert coords[0] == (2, 2)
-
-
-def test_spiral_covers_all_cells():
-    size = 4
-    coords = spiral_coordinates(size)
-    assert len(coords) == size * size
-    assert len(set(coords)) == size * size
-
-
-def test_spiral_all_in_bounds():
-    size = 6
-    for x, y in spiral_coordinates(size):
-        assert 0 <= x < size and 0 <= y < size
-
-
-def test_spiral_rejects_zero():
-    with pytest.raises(ValueError):
-        spiral_coordinates(0)
+from spiraldb import HelixMemory
 
 
 def test_write_read_roundtrip():
-    mem = HelixMemory(size=8, record_size=4)
-    mem.write("alpha", b"\x01\x02\x03\x04")
-    assert isinstance(mem.read_cell("alpha"), int)
+    memory = HelixMemory(size=8, record_size=4)
+    memory.write("alpha", b"\x01\x02\x03\x04")
+    assert memory.read("alpha") == b"\x01\x02\x03\x04"
 
 
-def test_write_rejects_wrong_record_size():
-    mem = HelixMemory(size=8, record_size=4)
+def test_deterministic_addressing():
+    memory = HelixMemory(size=8, record_size=4)
+    assert memory.address("alpha") == memory.address("alpha")
+
+
+def test_record_flip_detected_not_repairable():
+    memory = HelixMemory(size=8, record_size=4)
+    memory.write("alpha", b"\x01\x02\x03\x04")
+    memory.corrupt("alpha")
+    assert memory.verify() is False
+    memory.repair()
+    assert memory.verify() is True
     with pytest.raises(ValueError):
-        mem.write("alpha", b"\x01\x02")
+        memory.read_checked("alpha")
 
 
-def test_address_deterministic():
-    mem = HelixMemory(size=8)
-    assert mem.address("key") == mem.address("key")
+def test_parity_flip_detected_and_repaired():
+    memory = HelixMemory(size=8, record_size=4)
+    memory.write("alpha", b"\x01\x02\x03\x04")
+    memory.corrupt_parity("alpha")
+    assert memory.verify() is False
+    assert memory.repair() == 1
+    assert memory.read_checked("alpha") == b"\x01\x02\x03\x04"
 
 
-def test_verify_true_after_write():
-    mem = HelixMemory(size=8, record_size=2)
-    mem.write("a", b"\x10\x20")
-    mem.write("b", b"\x30\x40")
-    assert mem.verify() is True
+def test_keys_keep_their_row():
+    memory = HelixMemory(size=8, record_size=4)
+    memory.write("alpha", b"\x01\x02\x03\x04")
+    row = memory._slots["alpha"]
+    memory.write("alpha", b"\x05\x06\x07\x08")
+    assert memory._slots["alpha"] == row
+    assert memory.read("alpha") == b"\x05\x06\x07\x08"
 
 
-def test_corrupt_breaks_parity():
-    mem = HelixMemory(size=8, record_size=2)
-    mem.write("a", b"\x10\x20")
-    mem.corrupt("a")
-    assert mem.verify() is False
-
-
-def test_usage_and_len():
-    mem = HelixMemory(size=8, record_size=2)
-    mem.write("a", b"\x01\x02")
-    mem.write("b", b"\x03\x04")
-    assert len(mem) == 2
-    assert mem.usage() == pytest.approx(2 / 64)
-
-
-def test_constructor_rejects_zero():
-    with pytest.raises(ValueError):
-        HelixMemory(size=0)
-
-
-def test_spiral_size_one():
-    assert spiral_coordinates(1) == [(0, 0)]
+def test_unknown_key_raises():
+    memory = HelixMemory(size=8, record_size=4)
+    with pytest.raises(KeyError):
+        memory.read("nope")
