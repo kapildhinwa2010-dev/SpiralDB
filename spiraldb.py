@@ -68,6 +68,7 @@ class HelixMemory:
         self.parity = np.zeros(size, dtype=np.uint8)
         self._slots: dict = {}
         self._used: set = set()
+        self._row_hashes: dict = {}  # sha256 of record bytes at write time
 
     def address(self, key: str) -> int:
         """Deterministic spiral index from a blake2b hash of the key."""
@@ -98,6 +99,7 @@ class HelixMemory:
         self.arena[row, : self.record_size] = np.frombuffer(record, dtype=np.uint8)
         self.arena[row, self.record_size] = _xor_parity(self.arena[row, : self.record_size])
         self.parity[row] = _xor_parity(self.arena[row, : self.record_size + 1])
+        self._row_hashes[key] = hashlib.sha256(bytes(self.arena[row, : self.record_size])).digest()
         self._used.add(key)
 
     def read(self, key: str) -> bytes:
@@ -108,13 +110,23 @@ class HelixMemory:
         return bytes(self.arena[row, : self.record_size])
 
     def read_checked(self, key: str) -> bytes:
-        """Read and verify row parity first; raises ValueError on corruption."""
+        """Read and verify integrity; raises ValueError on any detected corruption.
+
+        Checks both XOR parity AND the content hash recorded at write time.
+        A single-bit record flip passes parity after repair() but fails the hash.
+        """
         if key not in self._slots:
             raise KeyError(key)
         row = self._slots[key]
+        rec = bytes(self.arena[row, : self.record_size])
+        # Parity check (catches parity-byte flips)
         if _xor_parity(self.arena[row, : self.record_size + 1]) != int(self.parity[row]):
             raise ValueError("row parity mismatch for key: {}".format(key))
-        return bytes(self.arena[row, : self.record_size])
+        # Content hash check (catches record-byte flips that parity repair masked)
+        stored_hash = self._row_hashes.get(key)
+        if stored_hash is not None and hashlib.sha256(rec).digest() != stored_hash:
+            raise ValueError("content hash mismatch for key: {} (record corrupted)".format(key))
+        return rec
 
     def read_cell(self, key: str) -> int:
         """First record byte (kept for backward compatibility)."""
