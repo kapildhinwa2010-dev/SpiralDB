@@ -1,52 +1,56 @@
 # SpiralDB
 
-[![CI](https://github.com/kapildhinwa2010-dev/SpiralDB/actions/workflows/ci.yml/badge.svg)](https://github.com/kapildhinwa2010-dev/SpiralDB/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/kapildhinwa2010-dev/SpiralDB/actions/workflows/codeql.yml/badge.svg)](https://github.com/kapildhinwa2010-dev/SpiralDB/actions/workflows/codeql.yml)
+SpiralDB is a small Python, in-memory record-store experiment. It assigns string keys to rows in a square byte-array arena using a deterministic BLAKE2b-derived starting position and spiral-order probing. Each row stores one fixed-length record and an XOR parity byte; checked reads also compare the record with a SHA-256 digest retained in memory.
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+This is an experimental, process-local implementation, not persistent or production-ready database storage.
 
-Content-addressed spiral database: blake2b-keyed slots, one record per row, XOR parity verification.
+## Requirements
 
-**Part of the [Kapildhinwa2010-dev Toolkit](https://github.com/kapildhinwa2010-dev/Kapildhinwa2010-dev).**
+The project metadata specifies Python 3.9 or later and NumPy 1.24 or later. Install the project from its repository root:
 
-## What it does
+```sh
+python -m pip install .
+```
 
-Keys are hashed with blake2b onto spiral rows; taken rows are probed
-spiral-wise. Each row stores one full record plus an XOR parity byte.
-verify() detects corruption, read_checked() refuses corrupted rows,
-and repair() restores parity bytes. This is the slot-lattice design
-the source experiments kept as the safe one.
+## Example
 
-## Install
+```python
+from spiraldb import HelixMemory
 
-    pip install -r requirements.txt
+db = HelixMemory(size=8, record_size=4)
+db.write("alpha", b"\x01\x02\x03\x04")
+print(db.read_checked("alpha"))
+```
 
-## Quick start
+`size` is the arena's row/column dimension. `record_size` is the exact number of bytes accepted by `write`; it must be at least 1, and `size` must be at least `record_size + 1` to leave room for the record and parity byte. Unknown keys raise `KeyError`; records of the wrong length raise `ValueError`.
 
-    from spiraldb import HelixMemory
+## Implemented interface
 
-    db = HelixMemory(size=8, record_size=4)
-    db.write("alpha", b"\x01\x02\x03\x04")
-    print(db.read_checked("alpha"))
+- `spiral_coordinates(size)` returns a clockwise center-out coordinate walk for a square grid; sizes below 1 raise `ValueError`.
+- `HelixMemory(size=8, record_size=4)` creates a zero-filled NumPy arena and in-memory key/slot bookkeeping.
+- `address(key)` returns a deterministic BLAKE2b-based spiral index. `write(key, record)` stores a fixed-length byte record and its parity; rewriting an existing key keeps its row.
+- `read(key)` returns the stored bytes without integrity checks. `read_checked(key)` checks row parity and the in-memory SHA-256 record digest, raising `ValueError` when a mismatch is detected. `read_cell(key)` returns the first record byte.
+- `verify()` checks XOR parity for occupied rows. `repair()` rewrites mismatching row parity bytes and returns the number of rows changed.
+- `corrupt(key)` and `corrupt_parity(key)` are mutation helpers for exercising record and parity corruption behavior. `usage()` reports a fraction, and `len(db)` returns the number of stored keys.
 
-## API
+## Integrity and limitations
 
-- write / read / read_checked / read_cell / verify / repair / corrupt /
-  corrupt_parity / usage / address
-- spiral_coordinates(size)
+- XOR parity can detect many changes, but it cannot locate or correct a damaged record, and changes that cancel under XOR can evade the parity check. `repair()` recomputes parity from the current record bytes; it can restore a corrupted parity byte, but it cannot restore damaged record data. In particular, repairing after record corruption can make `verify()` pass while the record remains wrong. Use `read_checked()` to also compare against the digest captured when the record was written.
+- All state, including records, key mappings, parity, and SHA-256 digests, exists only in memory. There is no persistence, serialization, file or network storage, or restart recovery.
+- The slot allocator assigns one key per row, so at most `size` keys fit, even though the arena contains `size * size` cells. When no free row remains, `write()` raises `MemoryError`. The current `usage()` calculation divides the number of keys by `size * size`, so it does not represent the fraction of row slots used.
+- Records have a single fixed length per instance. The implementation has no deletion, eviction, concurrency controls, or configurable durability/integrity policy.
 
-## Honest results and limitations
+## Tests and CI
 
-- One XOR parity byte per row DETECTS corruption but cannot locate it.
-  repair() restores the parity byte assuming the record is intact; a
-  flipped record byte stays corrupted after repair - use read_checked().
-- Capacity is one record per row; the arena fills up and raises
-  MemoryError instead of evicting.
-- Two flipped bytes in one row cancel out and pass verify().
-- Research toy, not trustworthy storage. For single-cell correction see
-  ECC-Memory (row+column parity).
+At commit `a9dd6b38848a21debb1d85c1cb5d383b6722b162`, `python3 -m pytest -q` was run and all 6 tests passed. The repository's GitHub Actions CI and CodeQL workflows also have successful completed runs for that same commit. CI runs the tests and a compile/import smoke check on Python 3.10, 3.11, and 3.12; CodeQL is configured for Python analysis.
+
+To run the test suite locally, install the development requirements and run pytest:
+
+```sh
+python -m pip install -r requirements.txt
+python -m pytest -q
+```
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+The repository includes an MIT License. See [LICENSE](LICENSE).
